@@ -234,6 +234,9 @@ const $=s=>document.querySelector(s);
 const Q=new URLSearchParams(location.search);
 const MODEL=Q.get("model")||"";
 const LABEL=Q.get("label")||MODEL;
+// What the whole scored grid is called: "Global" for global models, the
+// model domain for limited-area ones (config/<model>.md, `domain:`).
+const DOMAIN=Q.get("domain")||"Global";
 document.title=LABEL+" skill";
 $(".badge") && ($(".badge").textContent=LABEL);
 let D=null,days=[],MONTHLY=null;
@@ -334,14 +337,14 @@ function activeSplit(){
     const meta=(D.events||{})[eSel.value]||{};
     const label=(ev&&ev.label)||meta.label||pretty(eSel.value);
     const note=ev?` Event: ${ev.start} to ${ev.end} UTC (${ev.window==="init"?"initial":"valid"} time), `
-      +`region ${pretty(ev.region)}, ${ev.initial_conditions} initial conditions.`:"";
+      +`region ${ev.region==="global"?DOMAIN:pretty(ev.region)}, ${ev.initial_conditions} initial conditions.`:"";
     return {y:ev&&ev.metrics[k]?ev.metrics[k].values[v]:undefined,label,
-            ref:"All ICs, global",note};
+            ref:"All ICs, "+DOMAIN,note};
   }
   if(rSel.value&&rSel.value!=="global"){
     const rd=RCACHE[rSel.value];
     return {y:rd&&rd.metrics[k]?rd.metrics[k].values[v]:undefined,
-            label:pretty(rSel.value),ref:"Global"};
+            label:pretty(rSel.value),ref:DOMAIN};
   }
   return null;
 }
@@ -375,7 +378,7 @@ function drawHeat(){
   if(!flat.length){$("#s").textContent="";
     mk(svg,"text",{x:450,y:155,class:"al","text-anchor":"middle"}).textContent="no data";return;}
   const lo=Math.min(...flat),hi=Math.max(...flat);
-  $("#s").textContent=`One row per initial condition, one column per lead time (whole grid). `
+  $("#s").textContent=`One row per initial condition, one column per lead time (${DOMAIN}). `
     +`Range ${fmt(lo)} to ${fmt(hi)} ${unit}.`;
   const W=900,H=330,L=64,R=24,T=14,B=44;
   // Sequential single-hue ramp: chart surface -> accent.
@@ -435,7 +438,7 @@ function drawCurve(){
     ?" Baseline curves are whole-grid, all-IC references in every view.":"";
   $("#s").textContent=(
     k==="spread_skill"?"Ensemble spread over ensemble-mean RMSE. 1.0 is calibrated; below 1 is over-confident."
-    :LOWER.includes(k)?"Lower is better. Latitude-weighted, averaged over initial conditions."
+    :LOWER.includes(k)?"Lower is better. "+(D.lat_weights===false?"Uniformly weighted on the model grid":"Latitude-weighted")+", averaged over initial conditions."
     :"Higher is better.")+bnote+((split&&split.note)||"");
   if(split&&split.y===undefined){
     legend(null);
@@ -613,7 +616,7 @@ fetchJSON(`eval_scores_${MODEL}.json`)
     fillMetrics();
     if(D.regions&&D.regions.length>1){
       $("#rctl").hidden=false;
-      D.regions.forEach(r=>rSel.appendChild(new Option(pretty(r),r)));
+      D.regions.forEach(r=>rSel.appendChild(new Option(r==="global"?DOMAIN:pretty(r),r)));
       rSel.value="global";
     }
     if(D.has_monthly){
@@ -676,7 +679,7 @@ Pick a metric and variable; hover for exact values at each lead time.{splits_hin
         loading="lazy"></iframe>
 <script>
 document.getElementById("skill-plot").src = new URL(
-  "../../../_static/scorecard/plot.html?model={model_q}&label={label_q}",
+  "../../../_static/scorecard/plot.html?model={model_q}&label={label_q}&domain={domain_q}",
   window.location.href);
 </script>
 
@@ -894,6 +897,10 @@ def read_config(model: str) -> dict:
     )
     return {
         "label": meta.get("label", LABELS.get(model, model)),
+        # Name of the whole scored grid in the plot's captions: "Global" unless
+        # the model covers a limited area, such as "central United States model
+        # domain".
+        "domain": str(meta.get("domain") or "Global"),
         "badges": str(
             meta.get("badges", "") or _api_badges(meta.get("px_class", ""))
         ).strip(),
@@ -1032,6 +1039,7 @@ def build_page(model: str, doc: dict, conf: dict) -> str:
         provenance_table=provenance_table(doc),
         variables_table=variables_table(doc),
         label_q=quote(label),
+        domain_q=quote(conf["domain"]),
         badges=("\n{% badges " + conf["badges"] + " %}\n" if conf["badges"] else ""),
         description=("\n" + conf["description"] + "\n") if conf["description"] else "",
         reference=("\n" + conf["extras"] + "\n") if conf["extras"] else "",

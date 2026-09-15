@@ -20,12 +20,19 @@
 #
 # One-time setup on the fork: Settings -> Pages -> Source: "GitHub Actions".
 # The site lands at https://<owner>.github.io/earth2studio/scorecard/
+#
+# Score data comes from the Hugging Face dataset named by the repository
+# variable SCORECARD_DATA_REPO (Settings -> Secrets and variables ->
+# Actions -> Variables), defaulting to the upstream nvidia/earth2studio-assets
+# dataset; set it to a personal dataset filled by `export_scores.py --upload`
+# to preview unmerged data (the build falls back to upstream while that
+# dataset does not exist).  Add an HF_TOKEN secret only if it is private.
 
 name: temp-scorecard-docs
 
 on:
   push:
-    branches: [eval]
+    branches: [eval, event_sc]
   workflow_dispatch:
 
 permissions:
@@ -50,6 +57,10 @@ jobs:
       # Fast docs build: gallery examples are not executed
       # (E2S_GALLERY_EXECUTE=never in the make target), so no GPU is needed.
       - run: make docs
+        env:
+          SCORECARD_DATA_REPO: ${{ vars.SCORECARD_DATA_REPO || 'nvidia/earth2studio-assets' }}
+          SCORECARD_DATA_REVISION: ${{ vars.SCORECARD_DATA_REVISION }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

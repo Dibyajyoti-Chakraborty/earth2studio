@@ -32,7 +32,7 @@ name: temp-scorecard-docs
 
 on:
   push:
-    branches: [eval, event_sc]
+    branches: [eval]
   workflow_dispatch:
 
 permissions:

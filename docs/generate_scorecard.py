@@ -898,8 +898,7 @@ def read_config(model: str) -> dict:
     return {
         "label": meta.get("label", LABELS.get(model, model)),
         # Name of the whole scored grid in the plot's captions: "Global" unless
-        # the model covers a limited area, such as "central United States model
-        # domain".
+        # the model covers a limited area, such as "CONUS".
         "domain": str(meta.get("domain") or "Global"),
         "badges": str(
             meta.get("badges", "") or _api_badges(meta.get("px_class", ""))

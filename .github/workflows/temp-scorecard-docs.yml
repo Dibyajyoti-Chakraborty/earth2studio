@@ -23,10 +23,10 @@
 #
 # Score data comes from the Hugging Face dataset named by the repository
 # variable SCORECARD_DATA_REPO (Settings -> Secrets and variables ->
-# Actions -> Variables), defaulting to the upstream nvidia/earth2studio-assets
-# dataset; set it to a personal dataset filled by `export_scores.py --upload`
-# to preview unmerged data (the build falls back to upstream while that
-# dataset does not exist).  Add an HF_TOKEN secret only if it is private.
+# Actions -> Variables), defaulting to the personal mirror of the upstream
+# data (dibyajyotic/earth2studio-assets), which can carry unmerged updates;
+# the build falls back to nvidia/earth2studio-assets while that dataset does
+# not exist.  Add an HF_TOKEN secret only if the dataset is private.
 
 name: temp-scorecard-docs
 
@@ -58,7 +58,7 @@ jobs:
       # (E2S_GALLERY_EXECUTE=never in the make target), so no GPU is needed.
       - run: make docs
         env:
-          SCORECARD_DATA_REPO: ${{ vars.SCORECARD_DATA_REPO || 'nvidia/earth2studio-assets' }}
+          SCORECARD_DATA_REPO: ${{ vars.SCORECARD_DATA_REPO || 'dibyajyotic/earth2studio-assets' }}
           SCORECARD_DATA_REVISION: ${{ vars.SCORECARD_DATA_REVISION }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
       - uses: actions/upload-pages-artifact@v3

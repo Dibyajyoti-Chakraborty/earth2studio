@@ -16,7 +16,7 @@
 # limitations under the License.
 label: StormCast
 category: Prognostic models
-domain: central United States model domain
+domain: CONUS
 px_class: StormCast
 short: StormCast is NVIDIA's generative km-scale model for the central United States.
 ---

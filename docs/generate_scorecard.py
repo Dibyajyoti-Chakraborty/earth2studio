@@ -82,10 +82,15 @@ STATIC = DOCS / "_static" / "scorecard"  # data + shared plot live here
 # Earth2Studio assets dataset on Hugging Face, and the docs build fetches
 # them into ``STATIC``. Local files always preferred, so a developer
 # iterating on fresh exports never triggers a download.
+# ``SCORECARD_DATA_REPO`` points the build at another dataset with the same
+# layout, for example a personal one that a fork's docs preview reads
+# (``export_scores.py --upload`` fills it); when that dataset does not
+# exist yet the build falls back to the upstream one.
 # ``SCORECARD_DATA_REVISION`` selects a branch or PR ref of the dataset
 # (for example ``refs/pr/2`` to build against a pending data update).
-DATA_REPO = "nvidia/earth2studio-assets"
-DATA_REVISION = os.environ.get("SCORECARD_DATA_REVISION", "main")
+UPSTREAM_DATA_REPO = "nvidia/earth2studio-assets"
+DATA_REPO = os.environ.get("SCORECARD_DATA_REPO") or UPSTREAM_DATA_REPO
+DATA_REVISION = os.environ.get("SCORECARD_DATA_REVISION") or "main"
 
 
 def _sync_data_from_hub() -> None:
@@ -102,22 +107,38 @@ def _sync_data_from_hub() -> None:
     import shutil
 
     from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import RepositoryNotFoundError
 
     if any(STATIC.glob("eval_scores_*.json")):
         return
-    root = snapshot_download(
-        repo_id=DATA_REPO,
-        repo_type="dataset",
-        revision=DATA_REVISION,
-        allow_patterns=["scorecard/*"],
-    )
+    repo = DATA_REPO
+    try:
+        root = snapshot_download(
+            repo_id=repo,
+            repo_type="dataset",
+            revision=DATA_REVISION,
+            allow_patterns=["scorecard/*"],
+        )
+    except RepositoryNotFoundError:
+        if repo == UPSTREAM_DATA_REPO:
+            raise
+        # A personal dataset that has not received its first upload yet:
+        # build from the upstream data rather than failing the site.
+        print(f"!! dataset {repo} not found; falling back to {UPSTREAM_DATA_REPO}")
+        repo = UPSTREAM_DATA_REPO
+        root = snapshot_download(
+            repo_id=repo,
+            repo_type="dataset",
+            revision="main",
+            allow_patterns=["scorecard/*"],
+        )
     files = sorted(Path(root, "scorecard").rglob("eval_scores_*.json"))
     if not files:
-        raise SystemExit(f"no score files found in the assets dataset: {DATA_REPO}")
+        raise SystemExit(f"no score files found in the assets dataset: {repo}")
     STATIC.mkdir(parents=True, exist_ok=True)
     for f in files:
         shutil.copyfile(f, STATIC / f.name)
-    print(f"fetched {len(files)} score files from the assets dataset")
+    print(f"fetched {len(files)} score files from the assets dataset {repo}")
 
 
 # Self-contained single-model skill plot. Same palette and idioms as the
@@ -197,6 +218,7 @@ limitations under the License.
   <div class="ctl" id="rctl" hidden><label>Region</label><select id="r"></select></div>
   <div class="ctl" id="moctl" hidden><label>Month</label><select id="mo"></select></div>
   <div class="ctl" id="hctl" hidden><label>Init hour</label><select id="h"></select></div>
+  <div class="ctl" id="ectl" hidden><label>Event</label><select id="e"></select></div>
   <div class="ctl" id="bctl" hidden><label>Baseline</label><select id="b"></select></div>
 </div>
 <div class="card"><h2 id="t"></h2><p id="s"></p>
@@ -205,8 +227,9 @@ limitations under the License.
 <div class="tip" id="tip"></div>
 <script>
 // No data here: the model is picked by ?model=, its JSON fetched below.
-// Regional / monthly splits live in sibling eval_scores_<model>_*.json
-// files and are fetched lazily the first time their control is used.
+// Regional / monthly / hourly / event splits live in sibling
+// eval_scores_<model>_*.json files and are fetched lazily the first time
+// their control is used.
 const $=s=>document.querySelector(s);
 const Q=new URLSearchParams(location.search);
 const MODEL=Q.get("model")||"";
@@ -227,9 +250,10 @@ const fmt=v=>{if(!isFin(v))return "–";const a=Math.abs(v);
   if(a!==0&&(a<1e-3||a>=1e5))return v.toExponential(2);
   return v.toFixed(a>=100?1:a>=10?2:3);};
 const mSel=$("#m"),vSel=$("#v"),lSel=$("#l"),rSel=$("#r"),moSel=$("#mo"),
-      hSel=$("#h"),bSel=$("#b"),vwSel=$("#vw");
+      hSel=$("#h"),eSel=$("#e"),bSel=$("#b"),vwSel=$("#vw");
 let HEAT=null;   // lazily fetched eval_scores_<model>_heatmap.json
 let HOURLY=null; // lazily fetched eval_scores_<model>_hourly.json
+let EVENTS=null; // lazily fetched eval_scores_<model>_events.json
 const BASELINES=__BASELINES__;
 const BCACHE={}; // baseline name -> its main eval_scores_<name>.json
 // The heatmap view swaps in its own (narrower) metric/variable sets.
@@ -290,10 +314,11 @@ function fillLevels(){
 function varName(){
   return VBASES[vSel.value]?vSel.value+lSel.value:vSel.value;
 }
-// The active split curve (region or month) for the current metric/variable,
-// or null when the whole-grid / all-IC curve is the only one to show.
-// undefined y means the split has no data for this metric (e.g. LSD is
-// spectral, hence global-only).
+// The active split curve (region, month, init hour or event) for the
+// current metric/variable, or null when the whole-grid / all-IC curve is
+// the only one to show.  undefined y means the split has no data for this
+// metric (e.g. LSD is spectral, hence global-only).  An event split also
+// carries a note for the subtitle: its window, region and IC count.
 function activeSplit(){
   const k=mSel.value,v=varName();
   if(moSel.value&&moSel.value!=="all"){
@@ -303,6 +328,15 @@ function activeSplit(){
   if(hSel.value&&hSel.value!=="all"){
     const hh=HOURLY&&HOURLY.metrics_by_hour[hSel.value];
     return {y:hh&&hh[k]?hh[k].values[v]:undefined,label:hSel.value+" ICs",ref:"All hours"};
+  }
+  if(eSel.value&&eSel.value!=="none"){
+    const ev=EVENTS&&EVENTS.metrics_by_event[eSel.value];
+    const meta=(D.events||{})[eSel.value]||{};
+    const label=(ev&&ev.label)||meta.label||pretty(eSel.value);
+    const note=ev?` Event: ${ev.start} to ${ev.end} UTC (${ev.window==="init"?"initial":"valid"} time), `
+      +`region ${pretty(ev.region)}, ${ev.initial_conditions} initial conditions.`:"";
+    return {y:ev&&ev.metrics[k]?ev.metrics[k].values[v]:undefined,label,
+            ref:"All ICs, global",note};
   }
   if(rSel.value&&rSel.value!=="global"){
     const rd=RCACHE[rSel.value];
@@ -402,7 +436,7 @@ function drawCurve(){
   $("#s").textContent=(
     k==="spread_skill"?"Ensemble spread over ensemble-mean RMSE. 1.0 is calibrated; below 1 is over-confident."
     :LOWER.includes(k)?"Lower is better. Latitude-weighted, averaged over initial conditions."
-    :"Higher is better.")+bnote;
+    :"Higher is better.")+bnote+((split&&split.note)||"");
   if(split&&split.y===undefined){
     legend(null);
     mk(svg,"text",{x:450,y:155,class:"al","text-anchor":"middle"})
@@ -476,22 +510,25 @@ function drawCurve(){
   hit.addEventListener("mouseleave",()=>{tip.style.opacity=0;
     hl.setAttribute("opacity",0);dots.forEach(d=>d.setAttribute("opacity",0));});
 }
-// Region and month are mutually exclusive splits: the monthly breakdown is
-// computed on the whole grid, so picking a month snaps the region back to
-// Global (and vice versa the month back to All).
+// Region, month, init hour and event are mutually exclusive splits: the
+// monthly breakdown is computed on the whole grid, so picking a month
+// snaps the region back to Global (and vice versa the month back to All).
 function syncControls(){
-  // One split at a time: region, month/season, and init hour are computed
-  // on independent axes, so combining them would need cross exports.  The
-  // baseline overlays stay available in every curve view: they are always
-  // whole-grid all-IC references (noted in the subtitle), so they never
-  // depend on the split.  The heatmap is a per-IC view of one model.
+  // One split at a time: region, month/season, init hour and event are
+  // computed on independent axes, so combining them would need cross
+  // exports.  The baseline overlays stay available in every curve view:
+  // they are always whole-grid all-IC references (noted in the subtitle),
+  // so they never depend on the split.  The heatmap is a per-IC view of
+  // one model.
   const heat=vwSel.value==="heat";
   const monthOn=moSel.value&&moSel.value!=="all";
   const regionOn=rSel.value&&rSel.value!=="global";
   const hourOn=hSel.value&&hSel.value!=="all";
-  rSel.disabled=heat||monthOn||hourOn;
-  moSel.disabled=heat||regionOn||hourOn;
-  hSel.disabled=heat||regionOn||monthOn;
+  const eventOn=eSel.value&&eSel.value!=="none";
+  rSel.disabled=heat||monthOn||hourOn||eventOn;
+  moSel.disabled=heat||regionOn||hourOn||eventOn;
+  hSel.disabled=heat||regionOn||monthOn||eventOn;
+  eSel.disabled=heat||regionOn||monthOn||hourOn;
   bSel.disabled=heat;
 }
 function activeBaselines(){
@@ -515,6 +552,15 @@ function onHour(){
     fetchJSON(`eval_scores_${MODEL}_hourly.json`)
       .then(d=>{HOURLY=d;syncControls();draw();})
       .catch(()=>{hSel.value="all";syncControls();draw();});
+    return;
+  }
+  syncControls();draw();
+}
+function onEvent(){
+  if(eSel.value!=="none"&&!EVENTS){
+    fetchJSON(`eval_scores_${MODEL}_events.json`)
+      .then(d=>{EVENTS=d;syncControls();draw();})
+      .catch(()=>{eSel.value="none";syncControls();draw();});
     return;
   }
   syncControls();draw();
@@ -556,6 +602,7 @@ lSel.addEventListener("change",draw);
 rSel.addEventListener("change",onRegion);
 moSel.addEventListener("change",onMonth);
 hSel.addEventListener("change",onHour);
+eSel.addEventListener("change",onEvent);
 bSel.addEventListener("change",onBaseline);
 vwSel.addEventListener("change",onView);
 // The export is plain minified JSON.
@@ -585,6 +632,13 @@ fetchJSON(`eval_scores_${MODEL}.json`)
       [...new Set(D.initial_conditions.map(t=>t.slice(11,13)+"Z"))].sort()
         .forEach(hh=>hSel.appendChild(new Option(hh,hh)));
       hSel.value="all";
+    }
+    if(D.has_events&&D.events){
+      $("#ectl").hidden=false;
+      eSel.appendChild(new Option("None","none"));
+      Object.keys(D.events).forEach(n=>
+        eSel.appendChild(new Option(D.events[n].label||pretty(n),n)));
+      eSel.value="none";
     }
     if(D.has_heatmap){$("#vwctl").hidden=false;vwSel.value="curve";}
     const bnames=Object.keys(BASELINES).filter(b=>b!==MODEL);
@@ -630,8 +684,8 @@ document.getElementById("skill-plot").src = new URL(
 
 {summary}
 
-Scores are latitude-weighted (cos φ) and aggregated over the initial
-conditions. Evaluation is done against ERA5 fetched from ARCO.{ic_note}
+Scores are {weighting} and aggregated over the initial
+conditions. Evaluation is done against {verification_source}.{ic_note}
 
 | | |
 |---|---|
@@ -639,9 +693,9 @@ conditions. Evaluation is done against ERA5 fetched from ARCO.{ic_note}
 | Initial conditions | {n_ic} ({years}) |
 | Initial condition source | {ic_source} |
 | Verification (ground truth) | {verification_source} |
-| Lead times | {lead_first} h to {lead_last_d} days |
+| Lead times | {lead_first} h to {horizon} |
 | Variables scored | {n_var} |
-| Metrics | {metric_list} |{region_row}
+| Metrics | {metric_list} |{region_row}{event_row}
 
 ## Variables
 
@@ -679,9 +733,10 @@ title: Scorecards
     and improved evaluation.
 
 Forecast skill of Earth2Studio models, one scorecard per model. These show
-each model's own skill, not a comparison between models. Every model was evaluated on the
-same campaign: {n_ic} initial conditions ({years}), 14-day horizon, ERA5
-verification via ARCO_ERA5. Pages are generated from per-model score (JSON) exports
+each model's own skill, not a comparison between models. The global models share
+one campaign: {n_ic} initial conditions ({years}), 14-day horizon, ERA5
+verification via ARCO_ERA5. Regional models are scored on event campaigns, described
+on their own pages. Pages are generated from per-model score (JSON) exports
 produced by the
 [scorecard recipe](https://github.com/NVIDIA/earth2studio/tree/main/recipes/eval/scorecard),
 which documents how to generate a scorecard for any model; the
@@ -718,6 +773,7 @@ REPO_URL = "https://github.com/NVIDIA/earth2studio"
 # (prefix + pressure level or height) plus a few exact surface names.
 _DESC_EXACT = {
     "msl": "Mean sea level pressure",
+    "mslp": "Mean sea level pressure",
     "sp": "Surface pressure",
     "tcwv": "Total column water vapour",
     "t2m": "2-metre temperature",
@@ -873,6 +929,18 @@ def provenance_table(doc: dict) -> str:
     return "\n".join("    " + ln for ln in table.splitlines())
 
 
+def horizon_text(lead_hours: list[int]) -> str:
+    """``14-day`` for global campaigns, ``12-hour`` for short regional ones."""
+    last = lead_hours[-1]
+    return f"{last // 24}-day" if last >= 48 else f"{last}-hour"
+
+
+def horizon_span(lead_hours: list[int]) -> str:
+    """The same horizon as a span: ``14 days`` or ``12 hours``."""
+    last = lead_hours[-1]
+    return f"{last // 24} days" if last >= 48 else f"{last} hours"
+
+
 def build_page(model: str, doc: dict, conf: dict) -> str:
     """Return the model's generated page."""
     label = conf["label"]
@@ -884,8 +952,11 @@ def build_page(model: str, doc: dict, conf: dict) -> str:
     )
     summary = (
         f"{kind.capitalize()} · {len(doc['initial_conditions'])} initial conditions · "
-        f"{doc['lead_hours'][-1] // 24}-day horizon · "
+        f"{horizon_text(doc['lead_hours'])} horizon · "
         f"{len(doc['variables'])} variables"
+    )
+    verification = DATA_SOURCES.get(
+        doc.get("verification_source"), doc.get("verification_source", "—")
     )
     regions = [r for r in doc.get("regions", []) if r != "global"]
     hints = []
@@ -898,6 +969,8 @@ def build_page(model: str, doc: dict, conf: dict) -> str:
         )
     if doc.get("has_hourly"):
         hints.append("the Init hour selector for skill by initialization time")
+    if doc.get("has_events"):
+        hints.append("the Event selector for skill during named weather events")
     if doc.get("has_heatmap"):
         hints.append("the View selector for the skill of every initial condition")
     if BASELINES and model not in BASELINES:
@@ -918,6 +991,17 @@ def build_page(model: str, doc: dict, conf: dict) -> str:
         if regions
         else ""
     )
+    events = doc.get("events") or {}
+    event_row = (
+        "\n| Events | "
+        + ", ".join(
+            f"{e.get('label', name)} ({e['start'][:10]} to {e['end'][:10]})"
+            for name, e in events.items()
+        )
+        + " |"
+        if events
+        else ""
+    )
     hours = sorted({t[11:13] for t in doc["initial_conditions"]})
     ic_note = (
         "\nInitial conditions rotate through the "
@@ -935,11 +1019,14 @@ def build_page(model: str, doc: dict, conf: dict) -> str:
         n_ic=len(doc["initial_conditions"]),
         years="/".join(years),
         lead_first=doc["lead_hours"][0],
-        lead_last_d=doc["lead_hours"][-1] // 24,
+        horizon=horizon_span(doc["lead_hours"]),
         n_var=len(doc["variables"]),
         ic_source=DATA_SOURCES.get(doc.get("ic_source"), doc.get("ic_source", "—")),
-        verification_source=DATA_SOURCES.get(
-            doc.get("verification_source"), doc.get("verification_source", "—")
+        verification_source=verification,
+        weighting=(
+            "latitude-weighted (cos φ)"
+            if doc.get("lat_weights", True)
+            else "uniformly weighted on the model grid"
         ),
         metric_list=", ".join(m["label"] for m in doc["metrics"].values()),
         provenance_table=provenance_table(doc),
@@ -950,6 +1037,7 @@ def build_page(model: str, doc: dict, conf: dict) -> str:
         reference=("\n" + conf["extras"] + "\n") if conf["extras"] else "",
         splits_hint=splits_hint,
         region_row=region_row,
+        event_row=event_row,
         ic_note=ic_note,
     )
     return md
@@ -966,7 +1054,7 @@ def _card(model: str, doc: dict, conf: dict) -> str:
     )
     facts = (
         f"{kind} · {len(doc['variables'])} variables · "
-        f"{doc['lead_hours'][-1] // 24}-day horizon"
+        f"{horizon_text(doc['lead_hours'])} horizon"
     )
     tooltip = f"{short + ' ' if short else ''}{facts}."
     # A landing-page style button: the model name is the label, the short
@@ -982,14 +1070,14 @@ def _card(model: str, doc: dict, conf: dict) -> str:
 def main() -> int:
     """Generate all scorecard pages and the shared plot."""
     _sync_data_from_hub()
-    # Split exports (regional / monthly breakdowns fetched lazily by the
-    # plot) sit beside the model files; they are data for a model's page,
-    # not models of their own.
+    # Split exports (regional / monthly / hourly / event breakdowns fetched
+    # lazily by the plot) sit beside the model files; they are data for a
+    # model's page, not models of their own.
     models = sorted(
         name
         for f in STATIC.glob("eval_scores_*.json")
         if not (name := f.name[len("eval_scores_") : -len(".json")]).endswith(
-            ("_monthly", "_heatmap", "_hourly")
+            ("_monthly", "_heatmap", "_hourly", "_events")
         )
         and "_region_" not in name
         and name not in BASELINES
@@ -1023,7 +1111,10 @@ def main() -> int:
         docs[model], confs[model] = doc, conf
         print(f"wrote scorecard/generated/{model}.md")
 
-    any_doc = next(iter(docs.values()))
+    # The index sentence describes the shared global campaign, so take its
+    # numbers from a global (multi-day) run when one exists.
+    global_docs = [d for d in docs.values() if d["lead_hours"][-1] >= 48]
+    any_doc = (global_docs or list(docs.values()))[0]
     years = sorted({t[:4] for d in docs.values() for t in d["initial_conditions"]})
     (GENERATED / "index.md").write_text(
         INDEX_MD.format(

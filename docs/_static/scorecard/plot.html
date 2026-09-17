@@ -230,6 +230,23 @@ function alignLeads(srcLeads,srcY){
     return q0+(q1-q0)*(h-h0)/(h1-h0);
   });
 }
+// Lead-time axis ticks. Short horizons (two days or less, the event
+// campaigns) read in hours; the 14-day campaigns keep days.
+function leadTicks(){
+  const maxh=D.lead_hours[D.lead_hours.length-1];
+  if(maxh<=48){
+    const step=maxh<=12?1:maxh<=24?3:6,ticks=[];
+    for(let h=0;h<=maxh+1e-9;h+=step)ticks.push({d:h/24,text:String(h)});
+    return {label:"lead time (hours)",ticks};
+  }
+  const maxd=days[days.length-1],step=maxd<=3?0.5:maxd<=8?1:2,ticks=[];
+  for(let d=0;d<=maxd+1e-9;d+=step)ticks.push({d,text:(d%1?d.toFixed(1):String(d))});
+  return {label:"lead time (days)",ticks};
+}
+function leadText(i){
+  return D.lead_hours[D.lead_hours.length-1]<=48
+    ?`${D.lead_hours[i]} h`:`${D.lead_hours[i]} h (${days[i]} d)`;
+}
 function drawLine(svg,y,px,py,color,dash){
   let d="",pen=false;
   y.forEach((q,i)=>{if(!isFin(q)){pen=false;return;}
@@ -269,12 +286,12 @@ function drawHeat(){
   for(let ri=0;ri<nr;ri+=4)
     mk(svg,"text",{x:L-8,y:T+(ri+0.5)*ch+3,class:"tk","text-anchor":"end"})
       .textContent=ics[ri].slice(0,7);
-  const maxd=days[days.length-1],step=maxd<=3?0.5:maxd<=8?1:2;
-  for(let d=step;d<=maxd+1e-9;d+=step){
-    const X=L+(W-L-R)*(d-days[0])/((days[days.length-1]-days[0])||1);
+  const ax=leadTicks();
+  for(const t of ax.ticks.filter(t=>t.d>0)){
+    const d=t.d,X=L+(W-L-R)*(d-days[0])/((days[days.length-1]-days[0])||1);
     mk(svg,"text",{x:X,y:H-B+16,class:"tk","text-anchor":"middle"})
-      .textContent=(d%1?d.toFixed(1):d);}
-  mk(svg,"text",{x:(L+W-R)/2,y:H-6,class:"al","text-anchor":"middle"}).textContent="lead time (days)";
+      .textContent=t.text;}
+  mk(svg,"text",{x:(L+W-R)/2,y:H-6,class:"al","text-anchor":"middle"}).textContent=ax.label;
   // Color legend: a thin gradient bar with min/max, top right.
   const gx=W-R-130;
   for(let i=0;i<26;i++)
@@ -293,7 +310,7 @@ function drawHeat(){
     box.setAttribute("x",L+ci*cw);box.setAttribute("y",T+ri*ch);box.setAttribute("opacity",1);
     const q=rows[ri]?rows[ri][ci]:null;
     tip.innerHTML=`<span class="k">IC</span> ${ics[ri]}<br>`
-      +`<span class="k">lead</span> ${D.lead_hours[ci]} h (${days[ci]} d)<br><b>${fmt(q)}</b> ${unit}`;
+      +`<span class="k">lead</span> ${leadText(ci)}<br><b>${fmt(q)}</b> ${unit}`;
     tip.style.opacity=1;
     let x=e.clientX+14,yy=e.clientY-10;
     const r=tip.getBoundingClientRect();
@@ -349,14 +366,14 @@ function drawCurve(){
   for(let i=0;i<=4;i++){const val=lo+(hi-lo)*i/4,Y=py(val);
     mk(svg,"line",{x1:L,x2:W-R,y1:Y,y2:Y,class:"gl"});
     mk(svg,"text",{x:L-8,y:Y+4,class:"tk","text-anchor":"end"}).textContent=fmt(val);}
-  const maxd=days[days.length-1],step=maxd<=3?0.5:maxd<=8?1:2;
-  for(let d=0;d<=maxd+1e-9;d+=step){
+  const ax=leadTicks();
+  for(const t of ax.ticks){const d=t.d;
     mk(svg,"line",{x1:px(d),x2:px(d),y1:T,y2:H-B,class:"gl"});
     mk(svg,"text",{x:px(d),y:H-B+16,class:"tk","text-anchor":"middle"})
-      .textContent=(d%1?d.toFixed(1):d);}
+      .textContent=t.text;}
   mk(svg,"line",{x1:L,x2:W-R,y1:H-B,y2:H-B,class:"ax"});
   mk(svg,"line",{x1:L,x2:L,y1:T,y2:H-B,class:"ax"});
-  mk(svg,"text",{x:(L+W-R)/2,y:H-6,class:"al","text-anchor":"middle"}).textContent="lead time (days)";
+  mk(svg,"text",{x:(L+W-R)/2,y:H-6,class:"al","text-anchor":"middle"}).textContent=ax.label;
   if(div){const Y=py(1);mk(svg,"line",{x1:L,x2:W-R,y1:Y,y2:Y,stroke:css("--muted"),
     "stroke-width":1,"stroke-dasharray":"4 4"});
     mk(svg,"text",{x:W-R,y:Y-6,class:"al","text-anchor":"end"}).textContent="calibrated (1.0)";}
@@ -378,7 +395,7 @@ function drawCurve(){
       else dots[si].setAttribute("opacity",0);
       const name=s.label?`<span class="k">${esc(s.label)}</span> `:"";
       return `${name}<b>${fmt(q)}</b>`;});
-    tip.innerHTML=`<span class="k">lead</span> ${D.lead_hours[bi]} h (${days[bi]} d)<br>`+
+    tip.innerHTML=`<span class="k">lead</span> ${leadText(bi)}<br>`+
       rows.join("<br>")+` ${D.metrics[mSel.value].unit||D.units[varName()]||""}`;
     tip.style.opacity=1;
     let x=e.clientX+14,yy=e.clientY-10;
@@ -527,7 +544,9 @@ fetchJSON(`eval_scores_${MODEL}.json`)
       eSel.value="none";
     }
     if(D.has_heatmap){$("#vwctl").hidden=false;vwSel.value="curve";}
-    const bnames=Object.keys(BASELINES).filter(b=>b!==MODEL);
+    // The baselines are whole-grid ERA5 reference runs, so they only apply
+    // to global models; a limited-area model has no comparable reference.
+    const bnames=DOMAIN==="Global"?Object.keys(BASELINES).filter(b=>b!==MODEL):[];
     if(bnames.length){
       $("#bctl").hidden=false;
       bSel.appendChild(new Option("None","none"));
